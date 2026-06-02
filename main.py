@@ -123,7 +123,6 @@ async def process_queue_periodically():
     while True:
         await asyncio.sleep(BATCH_INTERVAL)
         
-        # تصفير العداد التلقائي عند بدء يوم جديد
         if datetime.date.today() > last_reset_date:
             posts_sent_today = 0
             last_reset_date = datetime.date.today()
@@ -133,18 +132,15 @@ async def process_queue_periodically():
         if message_queue.empty():
             continue
 
-        # الحفاظ على الرسائل في حال تخطي العداد اليومي المسموح
         if posts_sent_today >= DAILY_LIMIT:
             logger.warning(f"⚠️ تم الوصول للحد اليومي المسموح ({DAILY_LIMIT}). سيتم الاحتفاظ بالرسائل في الطابور تلقائياً.")
             continue
 
-        # سحب المنشورات المجمعة من الطابور
         captured_texts = []
         while not message_queue.empty():
             text_item = message_queue.get_nowait()
             captured_texts.append(text_item)
 
-        # تحصين حجم السياق لمنع تضخم حجم النصوص الموجهة للذكاء الاصطناعي
         combined_text = "\n---\n".join(captured_texts)
         if len(combined_text) > 3500:
             logger.warning("⚠️ حجم النصوص المجمعة كبير جداً، تم اقتطاعها لحماية أداء محرك الذكاء الاصطناعي.")
@@ -154,22 +150,18 @@ async def process_queue_periodically():
 
         try:
             logger.info(f"🤖 استدعاء محرك {GEMINI_MODEL_NAME} للتوليد باللغة الإنجليزية...")
-            
-            # حماية المهام وتأمينها بمهلة أمان لمنع التجمد
             response = await asyncio.wait_for(
                 asyncio.to_thread(gemini_model.generate_content, final_prompt),
                 timeout=45.0
             )
             tweet_text = response.text.strip()
             
-            # ضبط الطول الإجباري الدقيق للتغريدة لـ X
             if len(tweet_text) > 280:
                 tweet_text = tweet_text[:277] + "..."
 
             success = False
             rate_limited = False
 
-            # نظام النشر المعزول والمحمي ضد تكرار البيانات
             for attempt in range(3):
                 try:
                     logger.info(f"🚀 محاولة نشر التغريدة الإنجليزية (محاولة {attempt+1}/3)...")
@@ -204,7 +196,7 @@ async def process_queue_periodically():
         except Exception as core_err:
             logger.error(f"🚨 خطأ غير متوقع داخل دورة المعالجة المجدولة: {core_err}")
 
-# --- 8. مراقب ومستمع قنوات تيليجرام (نسخة الـ ID الرقمي الكامل المحصنة) ---
+# --- 8. معالج استقبال رسائل تليجرام (بدون ديكوريتور خارجي لضمان الأمان) ---
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -214,28 +206,18 @@ telethon_client = TelegramClient(
     retry_delay=5
 )
 
-# متغير عالمي لتخزين الـ ID الرقمي الشامل للقناة بالبادئة 100-
-target_channel_id = None
-
-@telethon_client.on(events.NewMessage) 
 async def telegram_handler(event):
-    global target_channel_id
     try:
-        # مقارنة رقمية فورية آمنة بنسبة 100% بعد توحيد صيغة معرّف الـ Peer ID
-        if target_channel_id and event.chat_id == target_channel_id:
-            if event.message.message:
-                text = event.message.message.strip()
-                if text:
-                    logger.info(f"📥 [Telegram] New live message captured by ID: {event.chat_id}")
-                    await message_queue.put(text)
-                        
+        if event.message and event.message.message:
+            text = event.message.message.strip()
+            if text:
+                logger.info(f"📥 [Telegram] New live message captured perfectly from target channel!")
+                await message_queue.put(text)
     except Exception as e:
         logger.error(f"خطأ في معالج استقبال رسائل تليجرام: {e}")
 
-# --- 9. الدالة التشغيلية الكبرى لتشغيل البنى التحتية ---
+# --- 9. الدالة التشغيلية الكبرى لتشغيل البنى التحتية وفك العقد البرمجية ---
 async def main():
-    global target_channel_id
-    
     # 1. إطلاق السيرفر الوهمي لفحص الصحة الخاص بـ Render
     asyncio.create_task(start_health_server())
     
@@ -246,18 +228,19 @@ async def main():
     logger.info("🔗 جاري إقلاع مستمع تليجرام وتأمين البقاء النشط 24/7...")
     await telethon_client.start()
     
-    # 🛠️ حل معضلة الـ StringSession الحقيقية: استخراج المعرّف كاملاً بالبادئة الصارمة 100-
+    # 🛠️ الحل القاطع: جلب القناة أولاً ثم ربط المستمع بها ديناميكياً بعد استقرار الاتصال
     try:
-        logger.info(f"🔄 جاري حل معرّف القناة رقمياً لـ {SOURCE_CHANNEL}...")
+        logger.info(f"🔄 جاري قراءة الكيان الشبكي للقناة: {SOURCE_CHANNEL}...")
         channel_entity = await telethon_client.get_entity(SOURCE_CHANNEL)
         
-        # الاعتماد على المساعد البرمجي الداخلي للتحويل الرقمي الصارم لنمط Peer
-        from telethon import utils
-        target_channel_id = utils.get_peer_id(channel_entity)
-        
-        logger.info(f"🎯 تم شحن الـ Cache وربط المنظومة رقمياً بالـ ID الحقيقي: {target_channel_id}")
+        # ربط دالة الاستقبال مباشرة بالكيان الذي تم التحقق منه بالكامل
+        telethon_client.add_event_handler(
+            telegram_handler, 
+            events.NewMessage(chats=channel_entity)
+        )
+        logger.info(f"🎯 تم تفعيل الـ Dynamic Event Handler بنجاح صارم لقناة: {SOURCE_CHANNEL}")
     except Exception as ent_err:
-        logger.error(f"❌ خطأ حرج: لم يتمكن البوت من قراءة القناة عبر الشبكة، تأكد من اليوزرنام في الـ Environment: {ent_err}")
+        logger.error(f"❌ خطأ حرج: فشل حقن المستمع الديناميكي في الشبكة: {ent_err}")
     
     logger.info("🚀 البوت مستقر تماماً ومجهّز للنشر العالمي باللغة الإنجليزية 100%. في خضم الاستماع الحقيقي...")
     await telethon_client.run_until_disconnected()

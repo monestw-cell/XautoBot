@@ -204,7 +204,7 @@ async def process_queue_periodically():
         except Exception as core_err:
             logger.error(f"🚨 خطأ غير متوقع داخل دورة المعالجة المجدولة: {core_err}")
 
-# --- 8. مراقب ومستمع قنوات تيليجرام (نسخة الـ ID الرقمي المحصنة تلقائياً) ---
+# --- 8. مراقب ومستمع قنوات تيليجرام (نسخة الـ ID الرقمي الكامل المحصنة) ---
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -214,14 +214,14 @@ telethon_client = TelegramClient(
     retry_delay=5
 )
 
-# متغير عالمي لتخزين الـ ID الرقمي الثابت للقناة لتفادي مشاكل الكاش
+# متغير عالمي لتخزين الـ ID الرقمي الشامل للقناة بالبادئة 100-
 target_channel_id = None
 
 @telethon_client.on(events.NewMessage) 
 async def telegram_handler(event):
     global target_channel_id
     try:
-        # مقارنة رقمية فورية فائقة السرعة ومحصنة بنسبة 100% ضد مشاكل الأسماء النصية
+        # مقارنة رقمية فورية آمنة بنسبة 100% بعد توحيد صيغة معرّف الـ Peer ID
         if target_channel_id and event.chat_id == target_channel_id:
             if event.message.message:
                 text = event.message.message.strip()
@@ -246,11 +246,15 @@ async def main():
     logger.info("🔗 جاري إقلاع مستمع تليجرام وتأمين البقاء النشط 24/7...")
     await telethon_client.start()
     
-    # 🛠️ حل معضلة الـ StringSession: البوت يترجم المعرف النصي إلى ID رقمي ويحفظه بالكاش تلقائياً
+    # 🛠️ حل معضلة الـ StringSession الحقيقية: استخراج المعرّف كاملاً بالبادئة الصارمة 100-
     try:
         logger.info(f"🔄 جاري حل معرّف القناة رقمياً لـ {SOURCE_CHANNEL}...")
         channel_entity = await telethon_client.get_entity(SOURCE_CHANNEL)
-        target_channel_id = channel_entity.id
+        
+        # الاعتماد على المساعد البرمجي الداخلي للتحويل الرقمي الصارم لنمط Peer
+        from telethon import utils
+        target_channel_id = utils.get_peer_id(channel_entity)
+        
         logger.info(f"🎯 تم شحن الـ Cache وربط المنظومة رقمياً بالـ ID الحقيقي: {target_channel_id}")
     except Exception as ent_err:
         logger.error(f"❌ خطأ حرج: لم يتمكن البوت من قراءة القناة عبر الشبكة، تأكد من اليوزرنام في الـ Environment: {ent_err}")

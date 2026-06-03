@@ -36,7 +36,7 @@ X_ACCESS_TOKEN        = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_TOKEN_SECRET = os.environ["X_ACCESS_TOKEN_SECRET"]
 GEMINI_API_KEY        = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL_NAME     = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
-BATCH_INTERVAL        = int(os.environ.get("BATCH_INTERVAL_MINUTES", "20")) * 60
+BATCH_INTERVAL = int(os.environ.get("BATCH_INTERVAL_MINUTES", "20")) * 60
 DAILY_LIMIT           = int(os.environ.get("DAILY_LIMIT", "50"))
 
 # --- 3. تهيئة مكتبات X و Gemini ---
@@ -125,7 +125,7 @@ DEFAULT_PROMPT = (
 )
 GEMINI_PROMPT = os.environ.get("GEMINI_PROMPT", DEFAULT_PROMPT)
 
-# --- 8. خادم الصحة بـ aiohttp (لا يبلوك الـ event loop) ---
+# --- 8. خادم الصحة بـ aiohttp ---
 async def health_handler(request):
     return web.Response(text="OK")
 
@@ -139,24 +139,23 @@ async def start_health_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logger.info(f"✅ خادم الصحة (aiohttp) يعمل على المنفذ {port}")
-    # لا serve_forever هنا — بيشتغل في الخلفية تلقائياً
 
-# --- 9. Keep-Alive ---
+# --- 9. Keep-Alive منشط ومعدل ---
 async def telegram_keep_alive():
     while True:
-        await asyncio.sleep(180)
+        await asyncio.sleep(120)  # فحص كل دقيقتين لإنعاش المجرى الشبكي سريعاً
         try:
             await telethon_client.get_me()
-            logger.info("💓 [Keep-Alive] اتصال تيليجرام نشط.")
         except Exception as e:
-            logger.warning(f"⚠️ [Keep-Alive] مشكلة: {e} — جاري إعادة الاتصال...")
+            logger.warning(f"⚠️ [Keep-Alive] اكتشاف انقطاع صامت: {e} — جاري إعادة الاتصال...")
             try:
+                await telethon_client.disconnect()
                 await telethon_client.connect()
-                logger.info("🔁 [Keep-Alive] أُعيد الاتصال بنجاح.")
+                logger.info("🔁 [Keep-Alive] تم تدمير المقبس المعلق وإعادة بناء الاتصال بنجاح.")
             except Exception as ce:
-                logger.error(f"❌ [Keep-Alive] فشل إعادة الاتصال: {ce}")
+                logger.error(f"❌ [Keep-Alive] فشل إنعاش الشبكة السحابية: {ce}")
 
-# --- 10. المحرك الرئيسي للـ Polling ---
+# --- 10. المحرك الرئيسي المحصن بمهلات أمان صارمة ---
 async def process_channel_polling(target_channel_id):
     global posts_sent_today, last_reset_date, last_seen_message_id
     logger.info(f"⏳ محرك الفحص يعمل. دورة كل {BATCH_INTERVAL / 60} دقيقة.")
@@ -166,24 +165,25 @@ async def process_channel_polling(target_channel_id):
         cycle += 1
         logger.info(f"🔁 ===== دورة #{cycle} | last_id={last_seen_message_id} | sent={posts_sent_today}/{DAILY_LIMIT} =====")
 
-        # تصفير يومي
         if datetime.date.today() > last_reset_date:
             posts_sent_today = 0
             last_reset_date = datetime.date.today()
             await save_state(posts_sent_today, last_seen_message_id)
             logger.info("🔄 تصفير عداد اليوم.")
 
-        # حد يومي
         if posts_sent_today >= DAILY_LIMIT:
             logger.warning(f"⚠️ حد يومي ({DAILY_LIMIT}) مكتمل. انتظار...")
             await asyncio.sleep(BATCH_INTERVAL)
             continue
 
         try:
-            # تأسيس خط الأساس أول مرة
             if last_seen_message_id is None:
                 logger.info("📍 لا يوجد خط أساس، جاري تحديده...")
-                msgs = await telethon_client.get_messages(target_channel_id, limit=1)
+                # حمينا تأسيس خط الأساس بمهلة أمان 15 ثانية لمنع التعليق عند أول حركة
+                msgs = await asyncio.wait_for(
+                    telethon_client.get_messages(target_channel_id, limit=1),
+                    timeout=15.0
+                )
                 if msgs:
                     last_seen_message_id = msgs[0].id
                     await save_state(posts_sent_today, last_seen_message_id)
@@ -195,18 +195,29 @@ async def process_channel_polling(target_channel_id):
 
             logger.info(f"🔍 جلب الرسائل بعد ID={last_seen_message_id}...")
 
-            messages = await telethon_client.get_messages(
-                target_channel_id,
-                limit=50,
-                min_id=last_seen_message_id,
-                reverse=True
-            )
+            # 🛠️ حقن الحصن البرمجي: حد أقصى 20 ثانية للاستجابة الشبكية، وإلا ينهار الطلب المعلق وينتقل للدورة القادمة
+            try:
+                messages = await asyncio.wait_for(
+                    telethon_client.get_messages(
+                        target_channel_id,
+                        limit=50,
+                        min_id=last_seen_message_id,
+                        reverse=True
+                    ),
+                    timeout=20.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("⏱️ [تنبيه شبكة] خوادم تليجرام معلقة ومجمدة حالياً. كسر الطلب لتفادي القفل وتأجيل الدورة...")
+                logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة لبدء الدورة القادمة...")
+                await asyncio.sleep(BATCH_INTERVAL)
+                continue
 
             count = len(messages) if messages else 0
             logger.info(f"📊 نتيجة الجلب: {count} رسالة.")
 
             if not messages:
                 logger.info("💤 لا رسائل جديدة.")
+                logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة...")
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
 
@@ -220,13 +231,13 @@ async def process_channel_polling(target_channel_id):
                     new_texts.append(msg.message.strip())
                     logger.info(f"  📄 ID={msg.id}: {msg.message[:80]}...")
 
-            # دائماً حدّث الـ ID
             if highest_id > last_seen_message_id:
                 last_seen_message_id = highest_id
                 await save_state(posts_sent_today, last_seen_message_id)
 
             if not new_texts:
                 logger.info("💤 كل الرسائل الجديدة وسائط بدون نص.")
+                logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة...")
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
 
@@ -266,38 +277,35 @@ async def process_channel_polling(target_channel_id):
                 logger.error("❌ فشل النشر على X بعد 3 محاولات.")
 
         except asyncio.TimeoutError:
-            logger.error("⏰ انتهت مهلة Gemini.")
+            logger.error("⏰ انتهت مهلة محرك الـ Gemini.")
         except Exception as err:
-            logger.error(f"🚨 خطأ في دورة الفحص: {err}", exc_info=True)
+            logger.error(f"🚨 خطأ غير متوقع في دورة الفحص: {err}", exc_info=True)
 
         logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة...")
         await asyncio.sleep(BATCH_INTERVAL)
 
 # --- 11. الدالة الرئيسية ---
 async def main():
-    # ✅ الصح: start_health_server لا يبلوك — بيشتغل في الخلفية
     await start_health_server()
 
     logger.info("🔗 تشغيل عميل تيليجرام...")
     await telethon_client.start()
-    logger.info("✅ تيليجرام متصل.")
+    logger.info("✅ تيليجرام متصل بنجاح.")
 
     await load_state()
 
-    # Keep-Alive كـ background task
     asyncio.ensure_future(telegram_keep_alive())
 
     try:
         logger.info(f"🔍 جاري تحديد القناة: {SOURCE_CHANNEL}")
         channel_entity    = await telethon_client.get_entity(SOURCE_CHANNEL)
         target_channel_id = tg_utils.get_peer_id(channel_entity)
-        logger.info(f"🎯 القناة محددة: {target_channel_id}")
+        logger.info(f"🎯 القناة محددة ومعتمدة: {target_channel_id}")
 
-        # ✅ الـ polling يشتغل مباشرة بدون create_task — هو الـ main loop
         await process_channel_polling(target_channel_id)
 
     except Exception as e:
-        logger.error(f"❌ خطأ حرج في main: {e}", exc_info=True)
+        logger.error(f"❌ خطأ حرج في النواة main: {e}", exc_info=True)
         await telethon_client.run_until_disconnected()
 
 if __name__ == '__main__':

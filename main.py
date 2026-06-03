@@ -26,7 +26,7 @@ if missing_vars:
     logger.critical(f"❌ فشل إقلاع البوت. متغيرات البيئة التالية مفقودة: {missing_vars}")
     sys.exit(1)
 
-# شحن الإعدادات من البيئة
+# شحن الإعدادات من البيئة المحيطة
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
 API_HASH = os.environ.get("TELEGRAM_API_HASH")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING")
@@ -44,7 +44,7 @@ BATCH_INTERVAL = int(os.environ.get("BATCH_INTERVAL_MINUTES", "20")) * 60
 DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "50"))
 STATE_FILE = "/tmp/bot_state.json"
 
-# --- 3. تهيئة مكتبة X (واجهة v2 النصية المتوافقة مع الحساب المجاني) ---
+# --- 3. تهيئة مكتبة X وايرادات الذكاء الاصطناعي ---
 x_client_v2 = tweepy.Client(
     consumer_key=X_CONSUMER_KEY, consumer_secret=X_CONSUMER_SECRET,
     access_token=X_ACCESS_TOKEN, access_token_secret=X_ACCESS_TOKEN_SECRET
@@ -54,28 +54,34 @@ import google.generativeai as genai
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-message_queue = asyncio.Queue()
-
-# --- 4. إدارة حالة العداد اليومي المستمر ---
+# --- 4. إدارة حالة العداد اليومي ومعرفات التتبع المستمر (Persistence) ---
 def load_bot_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
+                count = data.get("count", 0)
+                last_id = data.get("last_seen_id", None)
+                
                 if data.get("date") == str(datetime.date.today()):
-                    return data.get("count", 0), datetime.date.today()
+                    return count, datetime.date.today(), last_id
+                return 0, datetime.date.today(), last_id
         except Exception as e:
             logger.error(f"خطأ أثناء قراءة ملف الحالة: {e}")
-    return 0, datetime.date.today()
+    return 0, datetime.date.today(), None
 
-def save_bot_state(count):
+def save_bot_state(count, last_id):
     try:
         with open(STATE_FILE, "w") as f:
-            json.dump({"count": count, "date": str(datetime.date.today())}, f)
+            json.dump({
+                "count": count, 
+                "date": str(datetime.date.today()), 
+                "last_seen_id": last_id
+            }, f)
     except Exception as e:
         logger.error(f"خطأ أثناء حفظ ملف الحالة: {e}")
 
-posts_sent_today, last_reset_date = load_bot_state()
+posts_sent_today, last_reset_date, last_seen_message_id = load_bot_state()
 
 # --- 5. البرومبت الاحترافي الموجه بالكامل باللغة الإنجليزية ---
 DEFAULT_PROMPT = (
@@ -90,7 +96,7 @@ DEFAULT_PROMPT = (
 )
 GEMINI_PROMPT = os.environ.get("GEMINI_PROMPT", DEFAULT_PROMPT)
 
-# --- 6. خادم فحص الصحة (Health Check) لـ Render ---
+# --- 6. خادم فحص الصحة السليم لـ Render ---
 async def handle_health_check(reader, writer):
     try:
         data = await reader.read(1024)
@@ -114,82 +120,99 @@ async def start_health_server():
     except Exception as e:
         logger.critical(f"فشل تشغيل خادم الصحة لـ Render: {e}")
 
-# --- 7. محرك معالجة الحزم المجدولة ---
-async def process_queue_periodically():
-    global posts_sent_today, last_reset_date
-    logger.info(f"⏳ معالج الطابور المجدول يعمل بنجاح. دورة التجميع: كل {BATCH_INTERVAL / 60} دقيقة.")
+# --- 7. المحرك المركزي الجديد: الفحص النشط، الترجمة، النشر المجدول ---
+async def process_channel_polling(target_channel_id):
+    global posts_sent_today, last_reset_date, last_seen_message_id
+    logger.info(f"⏳ محرك الفحص والتلخيص الدوري يعمل بنجاح. دورة التجميع: كل {BATCH_INTERVAL / 60} دقيقة.")
     
     while True:
-        await asyncio.sleep(BATCH_INTERVAL)
-        
+        # تصفير العداد التلقائي عند بدء يوم جديد
         if datetime.date.today() > last_reset_date:
             posts_sent_today = 0
             last_reset_date = datetime.date.today()
-            save_bot_state(posts_sent_today)
+            save_bot_state(posts_sent_today, last_seen_message_id)
             logger.info("🔄 تم تصفير عداد النشر لبدء يوم جديد.")
 
-        if message_queue.empty():
-            continue
-
         if posts_sent_today >= DAILY_LIMIT:
-            logger.warning(f"⚠️ تم الوصول للحد اليومي المسموح ({DAILY_LIMIT}). سيتم الاحتفاظ بالرسائل في الطابور تلقائياً.")
+            logger.warning(f"⚠️ تم الوصول للحد اليومي المسموح ({DAILY_LIMIT}). تخطي هذه الدورة تلقائياً.")
+            await asyncio.sleep(BATCH_INTERVAL)
             continue
-
-        captured_texts = []
-        while not message_queue.empty():
-            text_item = message_queue.get_nowait()
-            captured_texts.append(text_item)
-
-        combined_text = "\n---\n".join(captured_texts)
-        if len(combined_text) > 3500:
-            combined_text = combined_text[:3500]
-
-        final_prompt = GEMINI_PROMPT.format(combined_text=combined_text)
 
         try:
-            logger.info(f"🤖 استدعاء محرك {GEMINI_MODEL_NAME} للتوليد باللغة الإنجليزية...")
-            response = await asyncio.wait_for(
-                asyncio.to_thread(gemini_model.generate_content, final_prompt),
-                timeout=45.0
-            )
-            tweet_text = response.text.strip()
+            logger.info("🔍 [Polling] جاري فحص وسحب المنشورات الجديدة من خوادم تليجرام...")
             
-            if len(tweet_text) > 280:
-                tweet_text = tweet_text[:277] + "..."
+            # سحب آخر 20 منشوراً من القناة مباشرة عبر الشبكة
+            messages = await telethon_client.get_messages(target_channel_id, limit=20)
+            
+            if messages:
+                # إذا كانت هذه أول مرة يقلع فيها البوت، نحدد أحدث منشور كخط أساس وننتظر الدورة القادمة
+                if last_seen_message_id is None:
+                    last_seen_message_id = messages[0].id
+                    save_bot_state(posts_sent_today, last_seen_message_id)
+                    logger.info(f"📸 تم تحديد خط الأساس للمنشورات المستهدفة عند المعرف: {last_seen_message_id}")
+                    await asyncio.sleep(BATCH_INTERVAL)
+                    continue
 
-            success = False
-            rate_limited = False
+                # تجميع التحديثات النصية الجديدة فقط وترتيبها زمنيًا من الأقدم للأحدث
+                new_texts = []
+                highest_id = last_seen_message_id
+                
+                for msg in reversed(messages):
+                    if msg.id > last_seen_message_id:
+                        if msg.message and msg.message.strip():
+                            new_texts.append(msg.message.strip())
+                        if msg.id > highest_id:
+                            highest_id = msg.id
 
-            for attempt in range(3):
-                try:
-                    logger.info(f"🚀 محاولة نشر التغريدة الإنجليزية (محاولة {attempt+1}/3)...")
-                    await asyncio.to_thread(x_client_v2.create_tweet, text=tweet_text)
-                    success = True
-                    break
-                except tweepy.errors.TooManyRequests as e:
-                    logger.error(f"🛑 حد النشر الأقصى لـ X (429 Rate Limit): {e}")
-                    for txt in captured_texts:
-                        await message_queue.put(txt)
-                    rate_limited = True
-                    break
-                except Exception as e:
-                    wait_time = (2 ** attempt) * 5
-                    await asyncio.sleep(wait_time)
+                # إذا وجدنا منشورات جديدة، نقوم بالمعالجة فورا
+                if new_texts:
+                    logger.info(f"📥 تم رصد {len(new_texts)} منشور جديد! جاري صياغة التحديث العالمي...")
+                    
+                    combined_text = "\n---\n".join(new_texts)
+                    if len(combined_text) > 3500:
+                        combined_text = combined_text[:3500]
 
-            if success:
-                posts_sent_today += 1
-                save_bot_state(posts_sent_today)
-                logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد: {posts_sent_today}/{DAILY_LIMIT}")
-            else:
-                if not rate_limited:
-                    for txt in captured_texts:
-                        await message_queue.put(txt)
+                    final_prompt = GEMINI_PROMPT.format(combined_text=combined_text)
+                    
+                    logger.info(f"🤖 استدعاء محرك {GEMINI_MODEL_NAME} للتوليد بالإنجليزية...")
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(gemini_model.generate_content, final_prompt),
+                        timeout=45.0
+                    )
+                    tweet_text = response.text.strip()
+                    
+                    if len(tweet_text) > 280:
+                        tweet_text = tweet_text[:277] + "..."
 
-        except Exception as core_err:
-            logger.error(f"🚨 خطأ داخل دورة المعالجة المجدولة: {core_err}")
+                    success = False
+                    for attempt in range(3):
+                        try:
+                            logger.info(f"🚀 محاولة نشر التغريدة الإنجليزية (محاولة {attempt+1}/3)...")
+                            await asyncio.to_thread(x_client_v2.create_tweet, text=tweet_text)
+                            success = True
+                            break
+                        except Exception as e:
+                            wait_time = (2 ** attempt) * 5
+                            logger.warning(f"⚠️ خطأ مؤقت في شبكة X. انتظار {wait_time} ثانية: {e}")
+                            await asyncio.sleep(wait_time)
 
-# --- 8. معالج تليجرام العالمي التشخيصي (مقاوم لفخاخ الكاش كلياً) ---
-from telethon import TelegramClient, events
+                    if success:
+                        posts_sent_today += 1
+                        last_seen_message_id = highest_id
+                        save_bot_state(posts_sent_today, last_seen_message_id)
+                        logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد الحالي اليوم: {posts_sent_today}/{DAILY_LIMIT}")
+                    else:
+                        logger.error("❌ فشل النشر على منصة X. سيتم إعادة قراءة المنشورات في الدورة القادمة.")
+                else:
+                    logger.info("💤 فحص دوري مكتمل: لا توجد منشورات جديدة في القناة حتى الآن.")
+            
+        except Exception as err:
+            logger.error(f"🚨 خطأ حرج داخل دورة الفحص المباشر: {err}")
+            
+        await asyncio.sleep(BATCH_INTERVAL)
+
+# --- 8. إعداد وتأسيس العميل النصي لتليجرام ---
+from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 telethon_client = TelegramClient(
@@ -198,47 +221,32 @@ telethon_client = TelegramClient(
     retry_delay=5
 )
 
-# متغير عالمي لتخزين الـ ID الثابت
-target_channel_id = None
-
-@telethon_client.on(events.NewMessage) 
-async def telegram_handler(event):
-    global target_channel_id
-    try:
-        # لوغ تشخيصي فوري: سيطبع رقم أي شات تصل منه رسالة للحساب لإثبات الحياة 
-        logger.info(f"🔔 [إشارة شبكة حية] التقطت تحديثاً عابراً من شات رقم: {event.chat_id}")
-        
-        if target_channel_id and event.chat_id == target_channel_id:
-            if event.message and event.message.message:
-                text = event.message.message.strip()
-                if text:
-                    logger.info(f"📥 [تطابق ناجح] تم قنص المنشور الجديد بنجاح وجاري إدخاله للطابور!")
-                    await message_queue.put(text)
-    except Exception as e:
-        logger.error(f"خطأ في معالج تليجرام: {e}")
-
-# --- 9. الدالة التشغيلية الكبرى ---
+# --- 9. الدالة التشغيلية الكبرى لتشغيل البنى التحتية وفك العقد البرمجية ---
 async def main():
-    global target_channel_id
-    
+    # 1. إطلاق السيرفر الوهمي لفحص الصحة الخاص بـ Render
     asyncio.create_task(start_health_server())
-    asyncio.create_task(process_queue_periodically())
     
-    logger.info("🔗 جاري إقلاع مستمع تليجرام وتأمين البقاء النشط 24/7...")
+    # 2. تشغيل الـ User-bot وتفعيل الاتصال
+    logger.info("🔗 جاري تشغيل عميل تليجرام والمصادقة الأمنية الحية...")
     await telethon_client.start()
     
+    # 3. جلب الـ ID الحقيقي وتفعيل محرك الفحص الدوري مباشرة
     try:
-        logger.info(f"🔄 جاري حل معرّف القناة رقمياً لـ {SOURCE_CHANNEL}...")
+        logger.info(f"🔄 جاري قراءة وتأمين الكيان الشبكي لـ {SOURCE_CHANNEL}...")
         channel_entity = await telethon_client.get_entity(SOURCE_CHANNEL)
         
         from telethon import utils
         target_channel_id = utils.get_peer_id(channel_entity)
-        logger.info(f"🎯 تم شحن الـ Cache وربط المنظومة رقمياً بالـ ID الحقيقي: {target_channel_id}")
+        logger.info(f"🎯 تم التوثق من القناة بنجاح بالـ ID: {target_channel_id}")
+        
+        # إطلاق محرك الفحص والتلخيص الدوري الآمن
+        logger.info("🚀 إطلاق محرك الفحص والتلخيص الدوري الفعال 24/7...")
+        await process_channel_polling(target_channel_id)
+        
     except Exception as ent_err:
-        logger.error(f"❌ خطأ حرج في قراءة القناة: {ent_err}")
-    
-    logger.info("🚀 البوت مستقر تماماً وفي خضم الاستماع الحقيقي المباشر...")
-    await telethon_client.run_until_disconnected()
+        logger.error(f"❌ خطأ حرج: فشل تشغيل بنية الفحص الدوري: {ent_err}")
+        # إبقاء السيرفر حياً لمنع الانهيار المتكرر
+        await telethon_client.run_until_disconnected()
 
 if __name__ == '__main__':
     try:

@@ -5,6 +5,7 @@ import logging
 import asyncio
 import datetime
 import tweepy
+from aiohttp import web
 
 # --- 1. إعداد الـ Logging ---
 logging.basicConfig(
@@ -124,29 +125,24 @@ DEFAULT_PROMPT = (
 )
 GEMINI_PROMPT = os.environ.get("GEMINI_PROMPT", DEFAULT_PROMPT)
 
-# --- 8. خادم الصحة لـ Render ---
-async def handle_health_check(reader, writer):
-    try:
-        await reader.read(1024)
-        response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
-        writer.write(response.encode())
-        await writer.drain()
-    except Exception:
-        pass
-    finally:
-        writer.close()
-        await writer.wait_closed()
+# --- 8. خادم الصحة بـ aiohttp (لا يبلوك الـ event loop) ---
+async def health_handler(request):
+    return web.Response(text="OK")
 
 async def start_health_server():
     port = int(os.environ.get("PORT", 8080))
-    server = await asyncio.start_server(handle_health_check, '0.0.0.0', port)
-    logger.info(f"✅ خادم الصحة يعمل على المنفذ {port}")
-    async with server:
-        await server.serve_forever()
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"✅ خادم الصحة (aiohttp) يعمل على المنفذ {port}")
+    # لا serve_forever هنا — بيشتغل في الخلفية تلقائياً
 
-# --- 9. Keep-Alive: يمنع Telethon من الخمود ---
+# --- 9. Keep-Alive ---
 async def telegram_keep_alive():
-    """ping كل 3 دقائق للحفاظ على الاتصال"""
     while True:
         await asyncio.sleep(180)
         try:
@@ -197,7 +193,7 @@ async def process_channel_polling(target_channel_id):
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
 
-            logger.info(f"🔍 [Polling] جلب الرسائل بعد ID={last_seen_message_id}...")
+            logger.info(f"🔍 جلب الرسائل بعد ID={last_seen_message_id}...")
 
             messages = await telethon_client.get_messages(
                 target_channel_id,
@@ -206,7 +202,8 @@ async def process_channel_polling(target_channel_id):
                 reverse=True
             )
 
-            logger.info(f"📊 نتيجة الجلب: {len(messages) if messages else 0} رسالة.")
+            count = len(messages) if messages else 0
+            logger.info(f"📊 نتيجة الجلب: {count} رسالة.")
 
             if not messages:
                 logger.info("💤 لا رسائل جديدة.")
@@ -221,9 +218,9 @@ async def process_channel_polling(target_channel_id):
                     highest_id = msg.id
                 if msg.message and msg.message.strip():
                     new_texts.append(msg.message.strip())
-                    logger.info(f"  📄 رسالة ID={msg.id}: {msg.message[:60]}...")
+                    logger.info(f"  📄 ID={msg.id}: {msg.message[:80]}...")
 
-            # دائماً حدّث الـ ID حتى لو كل الرسائل صور/فيديو
+            # دائماً حدّث الـ ID
             if highest_id > last_seen_message_id:
                 last_seen_message_id = highest_id
                 await save_state(posts_sent_today, last_seen_message_id)
@@ -233,7 +230,7 @@ async def process_channel_polling(target_channel_id):
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
 
-            logger.info(f"📥 {len(new_texts)} رسالة نصية → جاري التلخيص بـ Gemini...")
+            logger.info(f"📥 {len(new_texts)} رسالة نصية → جاري التلخيص...")
             combined_text = "\n---\n".join(new_texts)
             if len(combined_text) > 3500:
                 combined_text = combined_text[:3500]
@@ -247,7 +244,7 @@ async def process_channel_polling(target_channel_id):
             if len(tweet_text) > 280:
                 tweet_text = tweet_text[:277] + "..."
 
-            logger.info(f"📝 التغريدة المُولَّدة ({len(tweet_text)} حرف): {tweet_text}")
+            logger.info(f"📝 التغريدة ({len(tweet_text)} حرف): {tweet_text}")
 
             success = False
             for attempt in range(3):
@@ -264,22 +261,22 @@ async def process_channel_polling(target_channel_id):
             if success:
                 posts_sent_today += 1
                 await save_state(posts_sent_today, last_seen_message_id)
-                logger.info(f"✅ نُشر على X بنجاح! ({posts_sent_today}/{DAILY_LIMIT})")
+                logger.info(f"✅ نُشر على X! ({posts_sent_today}/{DAILY_LIMIT})")
             else:
                 logger.error("❌ فشل النشر على X بعد 3 محاولات.")
 
         except asyncio.TimeoutError:
-            logger.error("⏰ انتهت مهلة Gemini (45 ثانية).")
+            logger.error("⏰ انتهت مهلة Gemini.")
         except Exception as err:
-            # ← exc_info=True يطبع الـ traceback كامل
             logger.error(f"🚨 خطأ في دورة الفحص: {err}", exc_info=True)
 
-        logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة للدورة القادمة...")
+        logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة...")
         await asyncio.sleep(BATCH_INTERVAL)
 
 # --- 11. الدالة الرئيسية ---
 async def main():
-    asyncio.create_task(start_health_server())
+    # ✅ الصح: start_health_server لا يبلوك — بيشتغل في الخلفية
+    await start_health_server()
 
     logger.info("🔗 تشغيل عميل تيليجرام...")
     await telethon_client.start()
@@ -287,7 +284,8 @@ async def main():
 
     await load_state()
 
-    asyncio.create_task(telegram_keep_alive())
+    # Keep-Alive كـ background task
+    asyncio.ensure_future(telegram_keep_alive())
 
     try:
         logger.info(f"🔍 جاري تحديد القناة: {SOURCE_CHANNEL}")
@@ -295,6 +293,7 @@ async def main():
         target_channel_id = tg_utils.get_peer_id(channel_entity)
         logger.info(f"🎯 القناة محددة: {target_channel_id}")
 
+        # ✅ الـ polling يشتغل مباشرة بدون create_task — هو الـ main loop
         await process_channel_polling(target_channel_id)
 
     except Exception as e:

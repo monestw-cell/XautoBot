@@ -120,13 +120,12 @@ async def start_health_server():
     except Exception as e:
         logger.critical(f"فشل تشغيل خادم الصحة لـ Render: {e}")
 
-# --- 7. المحرك المركزي الجديد: الفحص النشط، الترجمة، النشر المجدول ---
+# --- 7. المحرك المركزي المحدث والمحصن ضد منشورات الوسائط الفارغة ---
 async def process_channel_polling(target_channel_id):
     global posts_sent_today, last_reset_date, last_seen_message_id
     logger.info(f"⏳ محرك الفحص والتلخيص الدوري يعمل بنجاح. دورة التجميع: كل {BATCH_INTERVAL / 60} دقيقة.")
     
     while True:
-        # تصفير العداد التلقائي عند بدء يوم جديد
         if datetime.date.today() > last_reset_date:
             posts_sent_today = 0
             last_reset_date = datetime.date.today()
@@ -140,12 +139,9 @@ async def process_channel_polling(target_channel_id):
 
         try:
             logger.info("🔍 [Polling] جاري فحص وسحب المنشورات الجديدة من خوادم تليجرام...")
-            
-            # سحب آخر 20 منشوراً من القناة مباشرة عبر الشبكة
             messages = await telethon_client.get_messages(target_channel_id, limit=20)
             
             if messages:
-                # إذا كانت هذه أول مرة يقلع فيها البوت، نحدد أحدث منشور كخط أساس وننتظر الدورة القادمة
                 if last_seen_message_id is None:
                     last_seen_message_id = messages[0].id
                     save_bot_state(posts_sent_today, last_seen_message_id)
@@ -153,7 +149,6 @@ async def process_channel_polling(target_channel_id):
                     await asyncio.sleep(BATCH_INTERVAL)
                     continue
 
-                # تجميع التحديثات النصية الجديدة فقط وترتيبها زمنيًا من الأقدم للأحدث
                 new_texts = []
                 highest_id = last_seen_message_id
                 
@@ -164,10 +159,8 @@ async def process_channel_polling(target_channel_id):
                         if msg.id > highest_id:
                             highest_id = msg.id
 
-                # إذا وجدنا منشورات جديدة، نقوم بالمعالجة فورا
                 if new_texts:
                     logger.info(f"📥 تم رصد {len(new_texts)} منشور جديد! جاري صياغة التحديث العالمي...")
-                    
                     combined_text = "\n---\n".join(new_texts)
                     if len(combined_text) > 3500:
                         combined_text = combined_text[:3500]
@@ -193,25 +186,29 @@ async def process_channel_polling(target_channel_id):
                             break
                         except Exception as e:
                             wait_time = (2 ** attempt) * 5
-                            logger.warning(f"⚠️ خطأ مؤقت في شبكة X. انتظار {wait_time} ثانية: {e}")
+                            logger.warning(f"⚠️ خطأ مؤقت في شبكة X: {e}")
                             await asyncio.sleep(wait_time)
 
                     if success:
                         posts_sent_today += 1
                         last_seen_message_id = highest_id
                         save_bot_state(posts_sent_today, last_seen_message_id)
-                        logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد الحالي اليوم: {posts_sent_today}/{DAILY_LIMIT}")
+                        logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد: {posts_sent_today}/{DAILY_LIMIT}")
                     else:
-                        logger.error("❌ فشل النشر على منصة X. سيتم إعادة قراءة المنشورات في الدورة القادمة.")
+                        logger.error("❌ فشل النشر على منصة X. سيتم إعادة المحاولة في الدورة القادمة.")
                 else:
-                    logger.info("💤 فحص دوري مكتمل: لا توجد منشورات جديدة في القناة حتى الآن.")
+                    logger.info("💤 فحص دوري مكتمل: لا توجد منشورات نصية جديدة في القناة.")
+                    # 🛠️ التحديث الحاسم: دفع خط الأساس للأمام حتى لو كانت المنشورات الجديدة مجرد صور فارغة لمنع التعليق
+                    if highest_id > last_seen_message_id:
+                        last_seen_message_id = highest_id
+                        save_bot_state(posts_sent_today, last_seen_message_id)
             
         except Exception as err:
             logger.error(f"🚨 خطأ حرج داخل دورة الفحص المباشر: {err}")
             
         await asyncio.sleep(BATCH_INTERVAL)
 
-# --- 8. إعداد وتأسيس العميل النصي لتليجرام ---
+# --- 8. إعداد وتأسيس العميل النصي لتيليجرام ---
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -221,16 +218,13 @@ telethon_client = TelegramClient(
     retry_delay=5
 )
 
-# --- 9. الدالة التشغيلية الكبرى لتشغيل البنى التحتية وفك العقد البرمجية ---
+# --- 9. الدالة التشغيلية الكبرى ---
 async def main():
-    # 1. إطلاق السيرفر الوهمي لفحص الصحة الخاص بـ Render
     asyncio.create_task(start_health_server())
     
-    # 2. تشغيل الـ User-bot وتفعيل الاتصال
     logger.info("🔗 جاري تشغيل عميل تليجرام والمصادقة الأمنية الحية...")
     await telethon_client.start()
     
-    # 3. جلب الـ ID الحقيقي وتفعيل محرك الفحص الدوري مباشرة
     try:
         logger.info(f"🔄 جاري قراءة وتأمين الكيان الشبكي لـ {SOURCE_CHANNEL}...")
         channel_entity = await telethon_client.get_entity(SOURCE_CHANNEL)
@@ -239,13 +233,11 @@ async def main():
         target_channel_id = utils.get_peer_id(channel_entity)
         logger.info(f"🎯 تم التوثق من القناة بنجاح بالـ ID: {target_channel_id}")
         
-        # إطلاق محرك الفحص والتلخيص الدوري الآمن
         logger.info("🚀 إطلاق محرك الفحص والتلخيص الدوري الفعال 24/7...")
         await process_channel_polling(target_channel_id)
         
     except Exception as ent_err:
         logger.error(f"❌ خطأ حرج: فشل تشغيل بنية الفحص الدوري: {ent_err}")
-        # إبقاء السيرفر حياً لمنع الانهيار المتكرر
         await telethon_client.run_until_disconnected()
 
 if __name__ == '__main__':

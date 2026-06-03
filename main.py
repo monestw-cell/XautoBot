@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import tweepy
 
-# --- 1. إعداد الـ Logging الاحترافي للمراقبة المباشرة ---
+# --- 1. إعداد الـ Logging الاحترافي للبث الفوري المباشر ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
@@ -26,7 +26,7 @@ if missing_vars:
     logger.critical(f"❌ فشل إقلاع البوت. متغيرات البيئة التالية مفقودة: {missing_vars}")
     sys.exit(1)
 
-# شحن الإعدادات من البيئة المحيطة
+# شحن الإعدادات من البيئة
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
 API_HASH = os.environ.get("TELEGRAM_API_HASH")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING")
@@ -54,10 +54,9 @@ import google.generativeai as genai
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-# طابور آمن (Asyncio Queue) لمعالجة النصوص بشكل معزول
 message_queue = asyncio.Queue()
 
-# --- 4. إدارة حالة العداد اليومي المستمر (Persistence) ---
+# --- 4. إدارة حالة العداد اليومي المستمر ---
 def load_bot_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -78,7 +77,7 @@ def save_bot_state(count):
 
 posts_sent_today, last_reset_date = load_bot_state()
 
-# --- 5. البرومبت الاحترافي الموجه بالكامل باللغة الإنجليزية للجمهور الغربي ---
+# --- 5. البرومبت الاحترافي الموجه بالكامل باللغة الإنجليزية ---
 DEFAULT_PROMPT = (
     "You are the Editor-in-Chief of an independent documentation platform reporting directly from inside the Gaza Strip.\n"
     "Your objective is to craft a solemn, highly impactful, and concise humanitarian update in English based on the provided field updates below:\n"
@@ -91,7 +90,7 @@ DEFAULT_PROMPT = (
 )
 GEMINI_PROMPT = os.environ.get("GEMINI_PROMPT", DEFAULT_PROMPT)
 
-# --- 6. خادم فحص الصحة السليم (Health Check) المتوافق مع باقة Render المجانية ---
+# --- 6. خادم فحص الصحة (Health Check) لـ Render ---
 async def handle_health_check(reader, writer):
     try:
         data = await reader.read(1024)
@@ -115,7 +114,7 @@ async def start_health_server():
     except Exception as e:
         logger.critical(f"فشل تشغيل خادم الصحة لـ Render: {e}")
 
-# --- 7. محرك معالجة الحزم وتلخيصها عبر الذكاء الاصطناعي وجدولة النشر ---
+# --- 7. محرك معالجة الحزم المجدولة ---
 async def process_queue_periodically():
     global posts_sent_today, last_reset_date
     logger.info(f"⏳ معالج الطابور المجدول يعمل بنجاح. دورة التجميع: كل {BATCH_INTERVAL / 60} دقيقة.")
@@ -143,7 +142,6 @@ async def process_queue_periodically():
 
         combined_text = "\n---\n".join(captured_texts)
         if len(combined_text) > 3500:
-            logger.warning("⚠️ حجم النصوص المجمعة كبير جداً، تم اقتطاعها لحماية أداء محرك الذكاء الاصطناعي.")
             combined_text = combined_text[:3500]
 
         final_prompt = GEMINI_PROMPT.format(combined_text=combined_text)
@@ -169,34 +167,28 @@ async def process_queue_periodically():
                     success = True
                     break
                 except tweepy.errors.TooManyRequests as e:
-                    logger.error(f"🛑 حد النشر الأقصى لـ X (429 Rate Limit). إعادة المحتوى للطابور وتأجيل الدفعة: {e}")
+                    logger.error(f"🛑 حد النشر الأقصى لـ X (429 Rate Limit): {e}")
                     for txt in captured_texts:
                         await message_queue.put(txt)
                     rate_limited = True
                     break
                 except Exception as e:
                     wait_time = (2 ** attempt) * 5
-                    logger.warning(f"⚠️ خطأ اتصال مؤقت على شبكة X. انتظار {wait_time} ثانية: {e}")
                     await asyncio.sleep(wait_time)
 
             if success:
                 posts_sent_today += 1
                 save_bot_state(posts_sent_today)
-                logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد المستهلك اليوم: {posts_sent_today}/{DAILY_LIMIT}")
+                logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد: {posts_sent_today}/{DAILY_LIMIT}")
             else:
                 if not rate_limited:
-                    logger.error("❌ فشل النشر بسبب انقطاع الشبكة. إعادة النصوص إلى الطابور للدورة القادمة.")
                     for txt in captured_texts:
                         await message_queue.put(txt)
 
-        except asyncio.TimeoutError:
-            logger.error(f"⏱️ انتهت مهلة الاستجابة لخادم Gemini. إعادة النصوص المجمعة للطابور أوتوماتيكياً لحمايتها.")
-            for txt in captured_texts:
-                await message_queue.put(txt)
         except Exception as core_err:
-            logger.error(f"🚨 خطأ غير متوقع داخل دورة المعالجة المجدولة: {core_err}")
+            logger.error(f"🚨 خطأ داخل دورة المعالجة المجدولة: {core_err}")
 
-# --- 8. معالج استقبال رسائل تليجرام (بدون ديكوريتور خارجي لضمان الأمان) ---
+# --- 8. معالج تليجرام العالمي التشخيصي (مقاوم لفخاخ الكاش كلياً) ---
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -206,43 +198,46 @@ telethon_client = TelegramClient(
     retry_delay=5
 )
 
-async def telegram_handler(event):
-    try:
-        if event.message and event.message.message:
-            text = event.message.message.strip()
-            if text:
-                logger.info(f"📥 [Telegram] New live message captured perfectly from target channel!")
-                await message_queue.put(text)
-    except Exception as e:
-        logger.error(f"خطأ في معالج استقبال رسائل تليجرام: {e}")
+# متغير عالمي لتخزين الـ ID الثابت
+target_channel_id = None
 
-# --- 9. الدالة التشغيلية الكبرى لتشغيل البنى التحتية وفك العقد البرمجية ---
+@telethon_client.on(events.NewMessage) 
+async def telegram_handler(event):
+    global target_channel_id
+    try:
+        # لوغ تشخيصي فوري: سيطبع رقم أي شات تصل منه رسالة للحساب لإثبات الحياة 
+        logger.info(f"🔔 [إشارة شبكة حية] التقطت تحديثاً عابراً من شات رقم: {event.chat_id}")
+        
+        if target_channel_id and event.chat_id == target_channel_id:
+            if event.message and event.message.message:
+                text = event.message.message.strip()
+                if text:
+                    logger.info(f"📥 [تطابق ناجح] تم قنص المنشور الجديد بنجاح وجاري إدخاله للطابور!")
+                    await message_queue.put(text)
+    except Exception as e:
+        logger.error(f"خطأ في معالج تليجرام: {e}")
+
+# --- 9. الدالة التشغيلية الكبرى ---
 async def main():
-    # 1. إطلاق السيرفر الوهمي لفحص الصحة الخاص بـ Render
-    asyncio.create_task(start_health_server())
+    global target_channel_id
     
-    # 2. تشغيل المحرك الزمني المجدول لتجميع وتلخيص البيانات في الخلفية
+    asyncio.create_task(start_health_server())
     asyncio.create_task(process_queue_periodically())
     
-    # 3. تشغيل الـ User-bot وتفعيل مراقبة الاتصال التلقائي الدائم
     logger.info("🔗 جاري إقلاع مستمع تليجرام وتأمين البقاء النشط 24/7...")
     await telethon_client.start()
     
-    # 🛠️ الحل القاطع: جلب القناة أولاً ثم ربط المستمع بها ديناميكياً بعد استقرار الاتصال
     try:
-        logger.info(f"🔄 جاري قراءة الكيان الشبكي للقناة: {SOURCE_CHANNEL}...")
+        logger.info(f"🔄 جاري حل معرّف القناة رقمياً لـ {SOURCE_CHANNEL}...")
         channel_entity = await telethon_client.get_entity(SOURCE_CHANNEL)
         
-        # ربط دالة الاستقبال مباشرة بالكيان الذي تم التحقق منه بالكامل
-        telethon_client.add_event_handler(
-            telegram_handler, 
-            events.NewMessage(chats=channel_entity)
-        )
-        logger.info(f"🎯 تم تفعيل الـ Dynamic Event Handler بنجاح صارم لقناة: {SOURCE_CHANNEL}")
+        from telethon import utils
+        target_channel_id = utils.get_peer_id(channel_entity)
+        logger.info(f"🎯 تم شحن الـ Cache وربط المنظومة رقمياً بالـ ID الحقيقي: {target_channel_id}")
     except Exception as ent_err:
-        logger.error(f"❌ خطأ حرج: فشل حقن المستمع الديناميكي في الشبكة: {ent_err}")
+        logger.error(f"❌ خطأ حرج في قراءة القناة: {ent_err}")
     
-    logger.info("🚀 البوت مستقر تماماً ومجهّز للنشر العالمي باللغة الإنجليزية 100%. في خضم الاستماع الحقيقي...")
+    logger.info("🚀 البوت مستقر تماماً وفي خضم الاستماع الحقيقي المباشر...")
     await telethon_client.run_until_disconnected()
 
 if __name__ == '__main__':

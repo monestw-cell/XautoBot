@@ -25,18 +25,18 @@ if missing_vars:
     logger.critical(f"❌ متغيرات البيئة التالية مفقودة: {missing_vars}")
     sys.exit(1)
 
-API_ID            = int(os.environ["TELEGRAM_API_ID"])
-API_HASH          = os.environ["TELEGRAM_API_HASH"]
-SESSION_STRING    = os.environ["TELEGRAM_SESSION_STRING"]
-SOURCE_CHANNEL    = os.environ["SOURCE_CHANNEL"]
-X_CONSUMER_KEY    = os.environ["X_CONSUMER_KEY"]
-X_CONSUMER_SECRET = os.environ["X_CONSUMER_SECRET"]
-X_ACCESS_TOKEN    = os.environ["X_ACCESS_TOKEN"]
+API_ID                = int(os.environ["TELEGRAM_API_ID"])
+API_HASH              = os.environ["TELEGRAM_API_HASH"]
+SESSION_STRING        = os.environ["TELEGRAM_SESSION_STRING"]
+SOURCE_CHANNEL        = os.environ["SOURCE_CHANNEL"]
+X_CONSUMER_KEY        = os.environ["X_CONSUMER_KEY"]
+X_CONSUMER_SECRET     = os.environ["X_CONSUMER_SECRET"]
+X_ACCESS_TOKEN        = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_TOKEN_SECRET = os.environ["X_ACCESS_TOKEN_SECRET"]
-GEMINI_API_KEY    = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
-BATCH_INTERVAL    = int(os.environ.get("BATCH_INTERVAL_MINUTES", "20")) * 60
-DAILY_LIMIT       = int(os.environ.get("DAILY_LIMIT", "50"))
+GEMINI_API_KEY        = os.environ["GEMINI_API_KEY"]
+GEMINI_MODEL_NAME     = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+BATCH_INTERVAL        = int(os.environ.get("BATCH_INTERVAL_MINUTES", "20")) * 60
+DAILY_LIMIT           = int(os.environ.get("DAILY_LIMIT", "50"))
 
 # --- 3. تهيئة مكتبات X و Gemini ---
 x_client_v2 = tweepy.Client(
@@ -49,9 +49,9 @@ genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
 # --- 4. الحالة العالمية ---
-posts_sent_today      = 0
-last_reset_date       = datetime.date.today()
-last_seen_message_id  = None
+posts_sent_today     = 0
+last_reset_date      = datetime.date.today()
+last_seen_message_id = None
 
 # --- 5. إعداد Telethon ---
 from telethon import TelegramClient
@@ -62,7 +62,7 @@ telethon_client = TelegramClient(
     StringSession(SESSION_STRING), API_ID, API_HASH,
     connection_retries=10,
     retry_delay=3,
-    auto_reconnect=True,        # ✅ إعادة اتصال تلقائية
+    auto_reconnect=True,
     request_retries=5,
 )
 
@@ -70,7 +70,6 @@ telethon_client = TelegramClient(
 STATE_MSG_TAG = "XBOT_STATE_V2"
 
 async def load_state():
-    """تحميل الحالة من Saved Messages"""
     global posts_sent_today, last_reset_date, last_seen_message_id
     try:
         async for msg in telethon_client.iter_messages('me', limit=30):
@@ -89,16 +88,14 @@ async def load_state():
                     logger.warning(f"فشل تحليل رسالة الحالة: {parse_err}")
                     continue
     except Exception as e:
-        logger.error(f"خطأ في تحميل الحالة: {e}")
+        logger.error(f"خطأ في تحميل الحالة: {e}", exc_info=True)
     logger.info("ℹ️ لا توجد حالة محفوظة، جلسة جديدة.")
 
 async def save_state(count, last_id):
-    """حفظ الحالة في Saved Messages - تحديث نفس الرسالة"""
     try:
         payload = json.dumps({"count": count, "last_id": last_id, "date": str(datetime.date.today())})
         new_text = f"{STATE_MSG_TAG}|{payload}"
 
-        # ابحث عن الرسالة القديمة وحدّثها
         target_msg = None
         async for msg in telethon_client.iter_messages('me', limit=30):
             if msg.message and msg.message.startswith(STATE_MSG_TAG):
@@ -112,7 +109,7 @@ async def save_state(count, last_id):
 
         logger.info(f"💾 [STATE SAVED] last_id={last_id} | count={count}")
     except Exception as e:
-        logger.error(f"خطأ في حفظ الحالة: {e}")
+        logger.error(f"خطأ في حفظ الحالة: {e}", exc_info=True)
 
 # --- 7. البرومبت ---
 DEFAULT_PROMPT = (
@@ -149,25 +146,30 @@ async def start_health_server():
 
 # --- 9. Keep-Alive: يمنع Telethon من الخمود ---
 async def telegram_keep_alive():
-    """يرسل ping كل 4 دقائق ليحافظ على الاتصال حياً"""
+    """ping كل 3 دقائق للحفاظ على الاتصال"""
     while True:
-        await asyncio.sleep(240)  # كل 4 دقائق
+        await asyncio.sleep(180)
         try:
             await telethon_client.get_me()
             logger.info("💓 [Keep-Alive] اتصال تيليجرام نشط.")
         except Exception as e:
-            logger.warning(f"⚠️ [Keep-Alive] مشكلة في الاتصال، جاري إعادة الاتصال: {e}")
+            logger.warning(f"⚠️ [Keep-Alive] مشكلة: {e} — جاري إعادة الاتصال...")
             try:
                 await telethon_client.connect()
+                logger.info("🔁 [Keep-Alive] أُعيد الاتصال بنجاح.")
             except Exception as ce:
-                logger.error(f"❌ فشل إعادة الاتصال: {ce}")
+                logger.error(f"❌ [Keep-Alive] فشل إعادة الاتصال: {ce}")
 
 # --- 10. المحرك الرئيسي للـ Polling ---
 async def process_channel_polling(target_channel_id):
     global posts_sent_today, last_reset_date, last_seen_message_id
     logger.info(f"⏳ محرك الفحص يعمل. دورة كل {BATCH_INTERVAL / 60} دقيقة.")
 
+    cycle = 0
     while True:
+        cycle += 1
+        logger.info(f"🔁 ===== دورة #{cycle} | last_id={last_seen_message_id} | sent={posts_sent_today}/{DAILY_LIMIT} =====")
+
         # تصفير يومي
         if datetime.date.today() > last_reset_date:
             posts_sent_today = 0
@@ -177,24 +179,26 @@ async def process_channel_polling(target_channel_id):
 
         # حد يومي
         if posts_sent_today >= DAILY_LIMIT:
-            logger.warning(f"⚠️ حد يومي ({DAILY_LIMIT}) مكتمل.")
+            logger.warning(f"⚠️ حد يومي ({DAILY_LIMIT}) مكتمل. انتظار...")
             await asyncio.sleep(BATCH_INTERVAL)
             continue
 
         try:
-            # ✅ تأسيس خط الأساس إذا أول مرة
+            # تأسيس خط الأساس أول مرة
             if last_seen_message_id is None:
+                logger.info("📍 لا يوجد خط أساس، جاري تحديده...")
                 msgs = await telethon_client.get_messages(target_channel_id, limit=1)
                 if msgs:
                     last_seen_message_id = msgs[0].id
                     await save_state(posts_sent_today, last_seen_message_id)
                     logger.info(f"📸 خط الأساس: {last_seen_message_id}")
+                else:
+                    logger.warning("⚠️ القناة فارغة أو لا يمكن الوصول إليها!")
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
 
-            logger.info(f"🔍 [Polling] فحص الرسائل بعد ID={last_seen_message_id}...")
+            logger.info(f"🔍 [Polling] جلب الرسائل بعد ID={last_seen_message_id}...")
 
-            # ✅ جلب الرسائل الجديدة فقط بـ min_id + reverse
             messages = await telethon_client.get_messages(
                 target_channel_id,
                 limit=50,
@@ -202,12 +206,12 @@ async def process_channel_polling(target_channel_id):
                 reverse=True
             )
 
+            logger.info(f"📊 نتيجة الجلب: {len(messages) if messages else 0} رسالة.")
+
             if not messages:
                 logger.info("💤 لا رسائل جديدة.")
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
-
-            logger.info(f"📨 وجدت {len(messages)} رسالة جديدة.")
 
             new_texts  = []
             highest_id = last_seen_message_id
@@ -217,8 +221,9 @@ async def process_channel_polling(target_channel_id):
                     highest_id = msg.id
                 if msg.message and msg.message.strip():
                     new_texts.append(msg.message.strip())
+                    logger.info(f"  📄 رسالة ID={msg.id}: {msg.message[:60]}...")
 
-            # ✅ دائماً حدّث الـ ID حتى لو كل الرسائل صور/فيديو
+            # دائماً حدّث الـ ID حتى لو كل الرسائل صور/فيديو
             if highest_id > last_seen_message_id:
                 last_seen_message_id = highest_id
                 await save_state(posts_sent_today, last_seen_message_id)
@@ -228,7 +233,7 @@ async def process_channel_polling(target_channel_id):
                 await asyncio.sleep(BATCH_INTERVAL)
                 continue
 
-            logger.info(f"📥 {len(new_texts)} رسالة نصية → جاري التلخيص...")
+            logger.info(f"📥 {len(new_texts)} رسالة نصية → جاري التلخيص بـ Gemini...")
             combined_text = "\n---\n".join(new_texts)
             if len(combined_text) > 3500:
                 combined_text = combined_text[:3500]
@@ -242,11 +247,12 @@ async def process_channel_polling(target_channel_id):
             if len(tweet_text) > 280:
                 tweet_text = tweet_text[:277] + "..."
 
-            logger.info(f"📝 التغريدة: {tweet_text}")
+            logger.info(f"📝 التغريدة المُولَّدة ({len(tweet_text)} حرف): {tweet_text}")
 
             success = False
             for attempt in range(3):
                 try:
+                    logger.info(f"🚀 نشر على X (محاولة {attempt+1}/3)...")
                     await asyncio.to_thread(x_client_v2.create_tweet, text=tweet_text)
                     success = True
                     break
@@ -258,15 +264,17 @@ async def process_channel_polling(target_channel_id):
             if success:
                 posts_sent_today += 1
                 await save_state(posts_sent_today, last_seen_message_id)
-                logger.info(f"✅ نُشر على X! ({posts_sent_today}/{DAILY_LIMIT})")
+                logger.info(f"✅ نُشر على X بنجاح! ({posts_sent_today}/{DAILY_LIMIT})")
             else:
-                logger.error("❌ فشل النشر على X.")
+                logger.error("❌ فشل النشر على X بعد 3 محاولات.")
 
         except asyncio.TimeoutError:
-            logger.error("⏰ انتهت مهلة Gemini.")
+            logger.error("⏰ انتهت مهلة Gemini (45 ثانية).")
         except Exception as err:
-            logger.error(f"🚨 خطأ في دورة الفحص: {err}")
+            # ← exc_info=True يطبع الـ traceback كامل
+            logger.error(f"🚨 خطأ في دورة الفحص: {err}", exc_info=True)
 
+        logger.info(f"⏸️ انتظار {BATCH_INTERVAL/60} دقيقة للدورة القادمة...")
         await asyncio.sleep(BATCH_INTERVAL)
 
 # --- 11. الدالة الرئيسية ---
@@ -277,21 +285,20 @@ async def main():
     await telethon_client.start()
     logger.info("✅ تيليجرام متصل.")
 
-    # تحميل الحالة من السحابة
     await load_state()
 
-    # ✅ تشغيل Keep-Alive كـ task مستقل
     asyncio.create_task(telegram_keep_alive())
 
     try:
-        channel_entity   = await telethon_client.get_entity(SOURCE_CHANNEL)
+        logger.info(f"🔍 جاري تحديد القناة: {SOURCE_CHANNEL}")
+        channel_entity    = await telethon_client.get_entity(SOURCE_CHANNEL)
         target_channel_id = tg_utils.get_peer_id(channel_entity)
         logger.info(f"🎯 القناة محددة: {target_channel_id}")
 
         await process_channel_polling(target_channel_id)
 
     except Exception as e:
-        logger.error(f"❌ خطأ حرج: {e}")
+        logger.error(f"❌ خطأ حرج في main: {e}", exc_info=True)
         await telethon_client.run_until_disconnected()
 
 if __name__ == '__main__':

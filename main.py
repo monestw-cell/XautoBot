@@ -42,7 +42,11 @@ GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
 BATCH_INTERVAL = int(os.environ.get("BATCH_INTERVAL_MINUTES", "20")) * 60
 DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "50"))
-STATE_FILE = "/tmp/bot_state.json"
+
+# تهيئة المتغيرات العالمية للحالة
+posts_sent_today = 0
+last_reset_date = datetime.date.today()
+last_seen_message_id = None
 
 # --- 3. تهيئة مكتبة X وايرادات الذكاء الاصطناعي ---
 x_client_v2 = tweepy.Client(
@@ -54,34 +58,53 @@ import google.generativeai as genai
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-# --- 4. إدارة حالة العداد اليومي ومعرفات التتبع المستمر (Persistence) ---
-def load_bot_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                data = json.load(f)
-                count = data.get("count", 0)
-                last_id = data.get("last_seen_id", None)
-                
-                if data.get("date") == str(datetime.date.today()):
-                    return count, datetime.date.today(), last_id
-                return 0, datetime.date.today(), last_id
-        except Exception as e:
-            logger.error(f"خطأ أثناء قراءة ملف الحالة: {e}")
-    return 0, datetime.date.today(), None
-
-def save_bot_state(count, last_id):
+# --- 4. محرك إدارة الحالة السحابي الذكي (Telegram Cloud Persistence) ---
+async def load_bot_state_from_tg():
+    """قراءة العدادات وآخر ID مسموع من الرسائل المحفوظة للمستخدم"""
+    global posts_sent_today, last_reset_date, last_seen_message_id
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump({
-                "count": count, 
-                "date": str(datetime.date.today()), 
-                "last_seen_id": last_id
-            }, f)
+        # البحث عن آخر رسالة حالة محفوظة تبدأ بالوسم الثابت
+        messages = await telethon_client.get_messages('me', search='BOT_STATE_SYNC:', limit=1)
+        if messages:
+            state_text = messages[0].message
+            # الصيغة المدخرة: BOT_STATE_SYNC:count:last_seen_id:date
+            parts = state_text.split(':')
+            if len(parts) >= 5:
+                count = int(parts[1])
+                last_id = int(parts[2]) if parts[2] != 'None' else None
+                saved_date = parts[3]
+                
+                last_seen_message_id = last_id
+                if saved_date == str(datetime.date.today()):
+                    posts_sent_today = count
+                else:
+                    posts_sent_today = 0
+                
+                logger.info(f"🔎 [STATE LOADED FROM CLOUD] last_seen_id={last_seen_message_id}, count={posts_sent_today}")
+                return
     except Exception as e:
-        logger.error(f"خطأ أثناء حفظ ملف الحالة: {e}")
+        logger.error(f"⚠️ تفاجأ البوت بخطأ أثناء قراءة الحالة السحابية: {e}")
+    
+    # حالة افتراضية في حال عدم وجود سجلات سابقة
+    posts_sent_today = 0
+    last_seen_message_id = None
+    logger.info("ℹ️ لم يتم العثور على حالة سحابية سابقة، تم بدء جلسة جديدة كلياً.")
 
-posts_sent_today, last_reset_date, last_seen_message_id = load_bot_state()
+async def save_bot_state_to_tg(count, last_id):
+    """تعديل رسالة الحالة في السحابة لمنع تراكم وتشويه صندوق الرسائل المحفوظة"""
+    try:
+        state_text = f"BOT_STATE_SYNC:{count}:{last_id}:{datetime.date.today()}:🔒"
+        messages = await telethon_client.get_messages('me', search='BOT_STATE_SYNC:', limit=1)
+        
+        if messages:
+            # تحديث وتعديل نفس الرسالة السابقة بدلاً من إرسال رسالة جديدة لتظل الغرفة نظيفة
+            await messages[0].edit(state_text)
+        else:
+            # إذا كانت أول مرة، قم بإنشاء الرسالة الأساسية
+            await telethon_client.send_message('me', state_text)
+        logger.info(f"💾 [STATE SAVED TO CLOUD] ID={last_id} | Count={count}")
+    except Exception as e:
+        logger.error(f"⚠️ فشل شحن وتأمين الحالة سحابياً على تليجرام: {e}")
 
 # --- 5. البرومبت الاحترافي الموجه بالكامل باللغة الإنجليزية ---
 DEFAULT_PROMPT = (
@@ -96,7 +119,7 @@ DEFAULT_PROMPT = (
 )
 GEMINI_PROMPT = os.environ.get("GEMINI_PROMPT", DEFAULT_PROMPT)
 
-# --- 6. خادم فحص الصحة السليم لـ Render ---
+# --- 6. خادم فحص الصحة لـ Render ---
 async def handle_health_check(reader, writer):
     try:
         data = await reader.read(1024)
@@ -120,7 +143,7 @@ async def start_health_server():
     except Exception as e:
         logger.critical(f"فشل تشغيل خادم الصحة لـ Render: {e}")
 
-# --- 7. المحرك المركزي المحدث والمحصن ضد منشورات الوسائط الفارغة ---
+# --- 7. المحرك المركزي المحدث كلياً بناءً على فكرتك وعقد المزامنة الرقمية ---
 async def process_channel_polling(target_channel_id):
     global posts_sent_today, last_reset_date, last_seen_message_id
     logger.info(f"⏳ محرك الفحص والتلخيص الدوري يعمل بنجاح. دورة التجميع: كل {BATCH_INTERVAL / 60} دقيقة.")
@@ -129,7 +152,7 @@ async def process_channel_polling(target_channel_id):
         if datetime.date.today() > last_reset_date:
             posts_sent_today = 0
             last_reset_date = datetime.date.today()
-            save_bot_state(posts_sent_today, last_seen_message_id)
+            await save_bot_state_to_tg(posts_sent_today, last_seen_message_id)
             logger.info("🔄 تم تصفير عداد النشر لبدء يوم جديد.")
 
         if posts_sent_today >= DAILY_LIMIT:
@@ -138,70 +161,82 @@ async def process_channel_polling(target_channel_id):
             continue
 
         try:
-            logger.info("🔍 [Polling] جاري فحص وسحب المنشورات الجديدة من خوادم تليجرام...")
-            messages = await telethon_client.get_messages(target_channel_id, limit=20)
+            logger.info("🔍 [Polling] جاري فحص المنشورات الجديدة عبر مؤشر المزامنة...")
             
-            if messages:
-                if last_seen_message_id is None:
+            # منطقك الذهبي الفعال لعمل Stateful Polling آمن
+            if last_seen_message_id is not None:
+                messages = await telethon_client.get_messages(
+                    target_channel_id,
+                    limit=50,
+                    min_id=last_seen_message_id,
+                    reverse=True  # ترتيب تصاعدي تصحيحي تلقائي
+                )
+            else:
+                messages = await telethon_client.get_messages(target_channel_id, limit=1)
+                if messages:
                     last_seen_message_id = messages[0].id
-                    save_bot_state(posts_sent_today, last_seen_message_id)
-                    logger.info(f"📸 تم تحديد خط الأساس للمنشورات المستهدفة عند المعرف: {last_seen_message_id}")
-                    await asyncio.sleep(BATCH_INTERVAL)
-                    continue
+                    await save_bot_state_to_tg(posts_sent_today, last_seen_message_id)
+                    logger.info(f"📸 تم تحديد خط الأساس الأولي السحابي عند المعرف: {last_seen_message_id}")
+                await asyncio.sleep(BATCH_INTERVAL)
+                continue
 
-                new_texts = []
-                highest_id = last_seen_message_id
+            if not messages:
+                logger.info("💤 فحص دوري مكتمل: لا توجد رسائل جديدة كلياً في الشبكة.")
+                await asyncio.sleep(BATCH_INTERVAL)
+                continue
+
+            new_texts = []
+            highest_id = last_seen_message_id
+
+            for msg in messages:
+                if msg.message and msg.message.strip():
+                    new_texts.append(msg.message.strip())
+                if msg.id > highest_id:
+                    highest_id = msg.id
+
+            # قفز وتحديث المعرف مستمراً دائماً لمنع الحشر والتعليق بسبب الوسائط الصامتة
+            if highest_id > last_seen_message_id:
+                last_seen_message_id = highest_id
+                await save_bot_state_to_tg(posts_sent_today, last_seen_message_id)
+
+            if new_texts:
+                logger.info(f"📥 تم رصد {len(new_texts)} منشور نصي جديد! جاري صياغة التحديث العالمي...")
+                combined_text = "\n---\n".join(new_texts)
+                if len(combined_text) > 3500:
+                    combined_text = combined_text[:3500]
+
+                final_prompt = GEMINI_PROMPT.format(combined_text=combined_text)
                 
-                for msg in reversed(messages):
-                    if msg.id > last_seen_message_id:
-                        if msg.message and msg.message.strip():
-                            new_texts.append(msg.message.strip())
-                        if msg.id > highest_id:
-                            highest_id = msg.id
+                logger.info(f"🤖 استدعاء محرك {GEMINI_MODEL_NAME} للتوليد بالإنجليزية...")
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(gemini_model.generate_content, final_prompt),
+                    timeout=45.0
+                )
+                tweet_text = response.text.strip()
+                
+                if len(tweet_text) > 280:
+                    tweet_text = tweet_text[:277] + "..."
 
-                if new_texts:
-                    logger.info(f"📥 تم رصد {len(new_texts)} منشور جديد! جاري صياغة التحديث العالمي...")
-                    combined_text = "\n---\n".join(new_texts)
-                    if len(combined_text) > 3500:
-                        combined_text = combined_text[:3500]
+                success = False
+                for attempt in range(3):
+                    try:
+                        logger.info(f"🚀 محاولة نشر التغريدة الإنجليزية (محاولة {attempt+1}/3)...")
+                        await asyncio.to_thread(x_client_v2.create_tweet, text=tweet_text)
+                        success = True
+                        break
+                    except Exception as e:
+                        wait_time = (2 ** attempt) * 5
+                        logger.warning(f"⚠️ خطأ مؤقت في شبكة X: {e}")
+                        await asyncio.sleep(wait_time)
 
-                    final_prompt = GEMINI_PROMPT.format(combined_text=combined_text)
-                    
-                    logger.info(f"🤖 استدعاء محرك {GEMINI_MODEL_NAME} للتوليد بالإنجليزية...")
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(gemini_model.generate_content, final_prompt),
-                        timeout=45.0
-                    )
-                    tweet_text = response.text.strip()
-                    
-                    if len(tweet_text) > 280:
-                        tweet_text = tweet_text[:277] + "..."
-
-                    success = False
-                    for attempt in range(3):
-                        try:
-                            logger.info(f"🚀 محاولة نشر التغريدة الإنجليزية (محاولة {attempt+1}/3)...")
-                            await asyncio.to_thread(x_client_v2.create_tweet, text=tweet_text)
-                            success = True
-                            break
-                        except Exception as e:
-                            wait_time = (2 ** attempt) * 5
-                            logger.warning(f"⚠️ خطأ مؤقت في شبكة X: {e}")
-                            await asyncio.sleep(wait_time)
-
-                    if success:
-                        posts_sent_today += 1
-                        last_seen_message_id = highest_id
-                        save_bot_state(posts_sent_today, last_seen_message_id)
-                        logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد: {posts_sent_today}/{DAILY_LIMIT}")
-                    else:
-                        logger.error("❌ فشل النشر على منصة X. سيتم إعادة المحاولة في الدورة القادمة.")
+                if success:
+                    posts_sent_today += 1
+                    await save_bot_state_to_tg(posts_sent_today, last_seen_message_id)
+                    logger.info(f"✅ تم النشر على حساب X بنجاح! الرصيد المستهلك اليوم: {posts_sent_today}/{DAILY_LIMIT}")
                 else:
-                    logger.info("💤 فحص دوري مكتمل: لا توجد منشورات نصية جديدة في القناة.")
-                    # 🛠️ التحديث الحاسم: دفع خط الأساس للأمام حتى لو كانت المنشورات الجديدة مجرد صور فارغة لمنع التعليق
-                    if highest_id > last_seen_message_id:
-                        last_seen_message_id = highest_id
-                        save_bot_state(posts_sent_today, last_seen_message_id)
+                    logger.error("❌ فشل النشر على منصة X.")
+            else:
+                logger.info("💤 تم رصد منشورات جديدة ولكنها وسائط عارية بدون أي نصوص مراقبة.")
             
         except Exception as err:
             logger.error(f"🚨 خطأ حرج داخل دورة الفحص المباشر: {err}")
@@ -218,12 +253,16 @@ telethon_client = TelegramClient(
     retry_delay=5
 )
 
-# --- 9. الدالة التشغيلية الكبرى ---
+# --- 9. الدالة التشغيلية الكبرى لتشغيل البنى التحتية ---
 async def main():
     asyncio.create_task(start_health_server())
     
     logger.info("🔗 جاري تشغيل عميل تليجرام والمصادقة الأمنية الحية...")
     await telethon_client.start()
+    
+    # 🛠️ حقن آلية استعادة الحالة السحابية فور الإقلاع وقبل بدء الفحص الدوري
+    logger.info("🔄 جاري استدعاء وفحص ملف الحالة السحابية الدائم...")
+    await load_bot_state_from_tg()
     
     try:
         logger.info(f"🔄 جاري قراءة وتأمين الكيان الشبكي لـ {SOURCE_CHANNEL}...")

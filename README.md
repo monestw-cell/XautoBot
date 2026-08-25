@@ -1,56 +1,39 @@
-# X-Telegram Sync Bot (أداة أتمتة النشر بين X وتلغرام) 🤖🔄
+# X to Telegram Sync Bot 🤖🔄
 
-أداة بايثون مؤتمتة لمزامنة التغريدات ونشر المحتوى تلقائياً بين منصتي X (تويتر سابقاً) وقنوات/مجموعات Telegram.
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Tweepy](https://img.shields.io/badge/API-Tweepy-1DA1F2?logo=x&logoColor=white)](https://tweepy.org)
+[![Telegram](https://img.shields.io/badge/Broadcast-Telegram-2CA5E0?logo=telegram&logoColor=white)](https://telegram.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
----
-
-## 🌟 نبذة عن المشروع (Overview)
-
-**X-Telegram Sync Bot** هو بوت أتمتة خفيف وسريع، صُمم لمراقبة حسابات محددة أو وسوم على منصة X ونقل التغريدات والوسائط (صور، فيديوهات، نصوص) فورياً وتلقائياً إلى قنوات أو مجموعات التلغرام دون تدخل يدوي، مع سيرفر ويب مدمج للحفاظ على استمرارية التشغيل السحابي.
-
----
-
-## ✨ المميزات الرئيسية (Key Features)
-
-- **مراقبة ونشر تلقائي وفوري:** تتبع التغريدات الجديدة وإعادة نشرها في قنوات التلغرام بتنسيق أنيق.
-- **دعم الوسائط المتعددة:** التعامل مع الصور، مقاطع الفيديو، والروابط التفاعلية.
-- **تصفية المحتوى (Content Filtering):** فلترة التغريدات بناءً على الكلمات المفتاحية أو الردود (Excluding Replies/Retweets).
-- **نظام تسجيل متقدم (Logging):** تسجيل مفصل للأحداث وتتبع الأخطاء بدقة.
-- **خادم فحص الصحة السحابي (Health Server):** مدمج لضمان بقاء البوت فعالاً على منصات مثل Koyeb, Render, Fly.io أو VPS.
+An automated social media relay bot that monitors X (formerly Twitter) accounts and hashtags, instantly broadcasting new posts, threads, media, and videos directly to Telegram channels and groups.
 
 ---
 
-## 🛠️ التقنيات المستخدمة (Tech Stack)
+## ✨ Key Capabilities
 
-- **Language:** Python 3.10+
-- **X / Twitter API:** `tweepy`
-- **Telegram Bot API:** `aiohttp` / `python-telegram-bot`
-- **Deployment:** Docker & Python Web Server
+- **⚡ Real-Time Polling & Webhooks:** Instantaneous retrieval and forwarding of new tweets.
+- **🖼️ Rich Media Extraction:** Seamlessly forwards photos, multi-image galleries, and native MP4 videos.
+- **🔍 Smart Content Filtering:** Filter out retweets, replies, quote tweets, or match specific keywords.
+- **🛡️ Rate-Limit Safe:** Intelligent backoff algorithms adhering strictly to X API quotas.
+- **🩺 Self-Healing & Health Check:** Integrated web server ensuring zero-downtime on cloud hosting providers.
 
 ---
 
-## 🚀 التثبيت والتشغيل (Installation & Setup)
+## 🚀 Setup & Deployment
 
-### 1. الإعداد المحلي
 ```bash
-# استنساخ المستودع
+# Clone the repository
 git clone https://github.com/monestw-cell/x-telegram-sync-bot.git
 cd x-telegram-sync-bot
 
-# تثبيت التبعيات
+# Install requirements
 pip install -r requirements.txt
 
-# تشغيل البوت بعد ضبط المتغيرات
+# Run
 python main.py
-```
-
-### 2. التشغيل عبر Docker
-```bash
-docker build -t x-telegram-sync-bot .
-docker run -d --name x-sync-bot x-telegram-sync-bot
 ```
 
 ---
 
-## 📄 الترخيص (License)
-هذا المشروع مرخص تحت رخصة [MIT](LICENSE).
+## 📄 License
+Released under the [MIT License](LICENSE).
